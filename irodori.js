@@ -1,4 +1,4 @@
-import { saveTtsProviderSettings } from '../tts/index.js';
+import { saveTtsProviderSettings } from '../../tts/index.js';
 
 export { IrodoriTtsProvider };
 
