@@ -1,0 +1,7 @@
+{
+    "display_name": "Irodori TTS",
+    "version": "1.0.0",
+    "author": "Ebycow",
+    "js": "index.js",
+    "dependencies": ["tts"]
+}
