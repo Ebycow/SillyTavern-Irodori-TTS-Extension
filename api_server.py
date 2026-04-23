@@ -199,6 +199,48 @@ def _audio_to_wav_bytes(audio, sample_rate: int) -> bytes:
     return buf.read()
 
 
+_SPLIT_THRESHOLD = 100
+_SENTENCE_ENDINGS = "。！？…\n"
+
+
+def _split_text(text: str) -> list[str]:
+    """Split text into chunks of at most _SPLIT_THRESHOLD characters.
+
+    Splits on newlines first, then on Japanese sentence-ending punctuation.
+    """
+    import re
+
+    # Normalise CRLF
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    def _split_segment(seg: str) -> list[str]:
+        if len(seg) <= _SPLIT_THRESHOLD:
+            return [seg] if seg.strip() else []
+        # Split on sentence-ending punctuation, keeping the delimiter
+        parts = re.split(r'(?<=[。！？…])', seg)
+        chunks: list[str] = []
+        current = ""
+        for part in parts:
+            if len(current) + len(part) <= _SPLIT_THRESHOLD:
+                current += part
+            else:
+                if current:
+                    chunks.append(current)
+                # If part itself is still too long, hard-cut it
+                while len(part) > _SPLIT_THRESHOLD:
+                    chunks.append(part[:_SPLIT_THRESHOLD])
+                    part = part[_SPLIT_THRESHOLD:]
+                current = part
+        if current:
+            chunks.append(current)
+        return [c for c in chunks if c.strip()]
+
+    chunks: list[str] = []
+    for line in text.split("\n"):
+        chunks.extend(_split_segment(line))
+    return chunks or [text]
+
+
 def _resolve_ref_wav(voice_id: str) -> str | None:
     """Strip ref_ prefix and return absolute path, or None for no_ref."""
     if voice_id == "no_ref" or not voice_id:
@@ -266,10 +308,10 @@ def generate_tts(req: TtsRequest):
     cfg_scale_caption = req.cfg_scale_caption if use_caption else 0.0
     cfg_scale_speaker = req.cfg_scale_speaker if use_speaker else 0.0
 
-    try:
-        result = _runtime.synthesize(
+    def _synthesize_one(text: str):
+        return _runtime.synthesize(
             SamplingRequest(
-                text=req.text,
+                text=text,
                 caption=req.caption if use_caption else None,
                 ref_wav=ref_wav_path,
                 no_ref=use_no_ref,
@@ -283,10 +325,28 @@ def generate_tts(req: TtsRequest):
                 trim_tail=req.trim_tail,
             ),
         )
+
+    chunks = _split_text(req.text)
+    if len(chunks) > 1:
+        lengths = [len(c) for c in chunks]
+        print(
+            f"[tts] split into {len(chunks)} chunks "
+            f"(char lengths: {lengths}, total: {sum(lengths)})",
+            flush=True,
+        )
+
+    try:
+        import torch
+        results = [_synthesize_one(chunk) for chunk in chunks]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    wav_bytes = _audio_to_wav_bytes(result.audio, result.sample_rate)
+    if len(results) == 1:
+        audio = results[0].audio
+    else:
+        audio = torch.cat([r.audio for r in results], dim=-1)
+
+    wav_bytes = _audio_to_wav_bytes(audio, results[0].sample_rate)
     return Response(content=wav_bytes, media_type="audio/wav")
 
 
